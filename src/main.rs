@@ -1,6 +1,6 @@
-use std::{net::SocketAddr, process::Stdio};
+use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
-use tokio::process::Command;
+use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
 use warp::{Filter, Rejection};
 
 static GIT_PROJECT_ROOT: &str = "/root/test/";
@@ -48,6 +48,23 @@ async fn handle_git(method: http::Method, content_type: Option<String>, encoding
     let p = cmd.spawn().unwrap();
 
     dbg!(&p);
+
+    let out = BufReader::new(p.stdout.unwrap());
+
+    let mut headers = HashMap::new();
+
+    {
+        let mut out_lines = out.lines();
+        while let Some(line) = out_lines.next_line().await.unwrap() {
+            println!("line: {:?}", line);
+            if line.is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.split_once(": ") {
+                headers.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
     
     Ok(format!("Hello!"))
 }
