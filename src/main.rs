@@ -1,9 +1,9 @@
 use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
-use warp::{Filter, Rejection};
+use warp::{Filter, Rejection, path::Tail};
 
-static GIT_PROJECT_ROOT: &str = "/root/test/";
+static GIT_PROJECT_ROOT: &str = "/root/test";
 
 #[tokio::main]
 async fn main() {
@@ -14,7 +14,8 @@ async fn main() {
 
     let git = 
         warp::path("git")
-            .and(warp::path("crates.io-index-test"))
+            .and(warp::path("crates.io-index"))
+            .and(warp::path::tail())
             .and(warp::method())
             .and(warp::header::optional::<String>("Content-Type"))
             .and(warp::header::optional::<String>("Content-Encoding"))
@@ -27,8 +28,8 @@ async fn main() {
         .await;
 }
 
-async fn handle_git(method: http::Method, content_type: Option<String>, encoding: Option<String>, query: String, remote: Option<SocketAddr>) -> Result<String, Rejection> {
-    dbg!(&method, &content_type, &encoding, &query, &remote);
+async fn handle_git(path_tail: Tail, method: http::Method, content_type: Option<String>, encoding: Option<String>, query: String, remote: Option<SocketAddr>) -> Result<String, Rejection> {
+    dbg!(&path_tail, &method, &content_type, &encoding, &query, &remote);
 
     let remote = remote.map(|r| r.ip().to_string()).unwrap_or_else(|| "127.0.0.1".to_string());
 
@@ -36,18 +37,17 @@ async fn handle_git(method: http::Method, content_type: Option<String>, encoding
     cmd.arg("http-backend");
     cmd.env_clear();
     cmd.env("GIT_PROJECT_ROOT", GIT_PROJECT_ROOT);
-    cmd.env("PATH_INFO", "/crates.io-index");
+    cmd.env("PATH_INFO", format!("/crates.io-index/{}", path_tail.as_str()));
     cmd.env("REQUEST_METHOD", method.as_str());
     cmd.env("QUERY_STRING", query);
     cmd.env("REMOTE_USER", "");
     cmd.env("REMOTE_ADDR", remote);
+    cmd.env("GIT_HTTP_EXPORT_ALL", "true");
     cmd.stderr(Stdio::inherit());
     cmd.stdout(Stdio::piped());
     cmd.stdin(Stdio::piped());
 
     let p = cmd.spawn().unwrap();
-
-    dbg!(&p);
 
     let out = BufReader::new(p.stdout.unwrap());
 
