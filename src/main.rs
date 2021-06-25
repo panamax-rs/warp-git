@@ -1,12 +1,15 @@
 use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
-use http::Response;
-use hyper::{Body, body::Sender};
-use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}, process::{ChildStdout, Command}};
-use tokio_stream::StreamExt;
-use warp::{Filter, Rejection, path::Tail};
-use futures::Stream;
 use bytes::BytesMut;
+use futures::Stream;
+use http::Response;
+use hyper::{body::Sender, Body};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::{ChildStdout, Command},
+};
+use tokio_stream::StreamExt;
+use warp::{path::Tail, Filter, Rejection};
 
 static GIT_PROJECT_ROOT: &str = "/root/test";
 
@@ -38,7 +41,9 @@ async fn main() {
         .and(warp::body::stream())
         .and_then(handle_git_empty_query);
 
-    warp::serve(hello.or(git).or(git_no_query)).run(([0, 0, 0, 0], 3030)).await;
+    warp::serve(hello.or(git).or(git_no_query))
+        .run(([0, 0, 0, 0], 3030))
+        .await;
 }
 
 /// Handle a request from a git client.
@@ -50,12 +55,21 @@ async fn handle_git_empty_query<S, B>(
     encoding: Option<String>,
     remote: Option<SocketAddr>,
     body: S,
-) -> Result<Response<Body>, Rejection> 
-    where
-        S: Stream<Item = Result<B, warp::Error>> + Send + Unpin + 'static,
-        B: bytes::Buf + Sized
+) -> Result<Response<Body>, Rejection>
+where
+    S: Stream<Item = Result<B, warp::Error>> + Send + Unpin + 'static,
+    B: bytes::Buf + Sized,
 {
-    handle_git(path_tail, method, content_type, encoding, String::new(), remote, body).await
+    handle_git(
+        path_tail,
+        method,
+        content_type,
+        encoding,
+        String::new(),
+        remote,
+        body,
+    )
+    .await
 }
 
 /// Handle a request from a git client.
@@ -67,10 +81,10 @@ async fn handle_git<S, B>(
     query: String,
     remote: Option<SocketAddr>,
     mut body: S,
-) -> Result<Response<Body>, Rejection> 
-    where
-        S: Stream<Item = Result<B, warp::Error>> + Send + Unpin + 'static,
-        B: bytes::Buf + Sized
+) -> Result<Response<Body>, Rejection>
+where
+    S: Stream<Item = Result<B, warp::Error>> + Send + Unpin + 'static,
+    B: bytes::Buf + Sized,
 {
     dbg!(
         &path_tail,
