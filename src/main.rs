@@ -1,10 +1,11 @@
 use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
+use http::Response;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
 };
-use warp::{path::Tail, Filter, Rejection};
+use warp::{Filter, Rejection, path::Tail};
 
 static GIT_PROJECT_ROOT: &str = "/root/test";
 
@@ -82,6 +83,20 @@ async fn handle_git(
             }
         }
     }
+
+    dbg!(&headers);
+
+    let mut resp = Response::builder();
+    for (key, val) in headers {
+        if key == "Status" {
+            resp = resp.status(&val.as_bytes()[..3]);
+        } else {
+            resp = resp.header(&key, val);
+        }
+    }
+
+    dbg!(resp);
+
 
     Ok(format!("Hello!"))
 }
