@@ -2,8 +2,10 @@ use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
 use http::Response;
 use hyper::{Body, body::Sender};
-use tokio::{io::{AsyncBufReadExt, AsyncReadExt, BufReader}, process::{ChildStdout, Command}};
+use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}, process::{ChildStdout, Command}};
+use tokio_stream::StreamExt;
 use warp::{Filter, Rejection, path::Tail};
+use futures::Stream;
 use bytes::BytesMut;
 
 static GIT_PROJECT_ROOT: &str = "/root/test";
@@ -21,8 +23,11 @@ async fn main() {
         .and(warp::header::optional::<String>("Content-Encoding"))
         .and(warp::query::raw())
         .and(warp::addr::remote())
+        .and(warp::body::stream())
         .and_then(handle_git);
 
+    // query::raw() seems to expect a non-empty query string
+    // so create a separate set of filters for when it's empty
     let git_no_query = warp::path("git")
         .and(warp::path("crates.io-index"))
         .and(warp::path::tail())
@@ -30,29 +35,43 @@ async fn main() {
         .and(warp::header::optional::<String>("Content-Type"))
         .and(warp::header::optional::<String>("Content-Encoding"))
         .and(warp::addr::remote())
+        .and(warp::body::stream())
         .and_then(handle_git_empty_query);
 
     warp::serve(hello.or(git).or(git_no_query)).run(([0, 0, 0, 0], 3030)).await;
 }
 
-async fn handle_git_empty_query(
+/// Handle a request from a git client.
+/// Special case for empty query strings.
+async fn handle_git_empty_query<S, B>(
     path_tail: Tail,
     method: http::Method,
     content_type: Option<String>,
     encoding: Option<String>,
     remote: Option<SocketAddr>,
-) -> Result<Response<Body>, Rejection> {
-    handle_git(path_tail, method, content_type, encoding, String::new(), remote).await
+    body: S,
+) -> Result<Response<Body>, Rejection> 
+    where
+        S: Stream<Item = Result<B, warp::Error>> + Send + Unpin + 'static,
+        B: bytes::Buf + Sized
+{
+    handle_git(path_tail, method, content_type, encoding, String::new(), remote, body).await
 }
 
-async fn handle_git(
+/// Handle a request from a git client.
+async fn handle_git<S, B>(
     path_tail: Tail,
     method: http::Method,
     content_type: Option<String>,
     encoding: Option<String>,
     query: String,
     remote: Option<SocketAddr>,
-) -> Result<Response<Body>, Rejection> {
+    mut body: S,
+) -> Result<Response<Body>, Rejection> 
+    where
+        S: Stream<Item = Result<B, warp::Error>> + Send + Unpin + 'static,
+        B: bytes::Buf + Sized
+{
     dbg!(
         &path_tail,
         &method,
@@ -88,8 +107,15 @@ async fn handle_git(
 
     let p = cmd.spawn().unwrap();
 
+    let mut git_input = p.stdin.unwrap();
+    // Handle sending body to http-backend, if any
+    while let Some(Ok(mut buf)) = body.next().await {
+        git_input.write_all_buf(&mut buf).await.unwrap();
+    }
+
     let mut git_output = BufReader::new(p.stdout.unwrap());
 
+    // Collect headers from git CGI output
     let mut headers = HashMap::new();
     loop {
         let mut line = String::new();
@@ -106,6 +132,7 @@ async fn handle_git(
     }
     dbg!(&headers);
 
+    // Add headers to response (except for Status, which is the "200 OK" line)
     let mut resp = Response::builder();
     for (key, val) in headers {
         if key == "Status" {
@@ -115,6 +142,8 @@ async fn handle_git(
         }
     }
 
+    // Create channel, so data can be streamed without being fully loaded
+    // into memory. Requires a separate future to be spawned.
     let (sender, body) = Body::channel();
     tokio::spawn(send_git(sender, git_output));
 
@@ -122,16 +151,14 @@ async fn handle_git(
     Ok(resp)
 }
 
+/// Send data from git CGI process to hyper Sender, until there is no more
+/// data left.
 async fn send_git(mut sender: Sender, mut git_output: BufReader<ChildStdout>) {
     loop {
         let mut bytes_out = BytesMut::new();
         git_output.read_buf(&mut bytes_out).await.unwrap();
         if bytes_out.is_empty() {
-            println!("empty");
             return;
-        } else {
-            println!("not empty");
-            dbg!(&bytes_out);
         }
         sender.send_data(bytes_out.freeze()).await.unwrap();
     }
