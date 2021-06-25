@@ -1,11 +1,10 @@
 use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
 use http::Response;
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
-};
+use hyper::{Body, body::Sender};
+use tokio::{io::{AsyncBufReadExt, AsyncReadExt, BufReader}, process::{ChildStdout, Command}};
 use warp::{Filter, Rejection, path::Tail};
+use bytes::BytesMut;
 
 static GIT_PROJECT_ROOT: &str = "/root/test";
 
@@ -24,7 +23,26 @@ async fn main() {
         .and(warp::addr::remote())
         .and_then(handle_git);
 
-    warp::serve(hello.or(git)).run(([0, 0, 0, 0], 3030)).await;
+    let git_no_query = warp::path("git")
+        .and(warp::path("crates.io-index"))
+        .and(warp::path::tail())
+        .and(warp::method())
+        .and(warp::header::optional::<String>("Content-Type"))
+        .and(warp::header::optional::<String>("Content-Encoding"))
+        .and(warp::addr::remote())
+        .and_then(handle_git_empty_query);
+
+    warp::serve(hello.or(git).or(git_no_query)).run(([0, 0, 0, 0], 3030)).await;
+}
+
+async fn handle_git_empty_query(
+    path_tail: Tail,
+    method: http::Method,
+    content_type: Option<String>,
+    encoding: Option<String>,
+    remote: Option<SocketAddr>,
+) -> Result<Response<Body>, Rejection> {
+    handle_git(path_tail, method, content_type, encoding, String::new(), remote).await
 }
 
 async fn handle_git(
@@ -34,7 +52,7 @@ async fn handle_git(
     encoding: Option<String>,
     query: String,
     remote: Option<SocketAddr>,
-) -> Result<String, Rejection> {
+) -> Result<Response<Body>, Rejection> {
     dbg!(
         &path_tail,
         &method,
@@ -60,6 +78,9 @@ async fn handle_git(
     cmd.env("QUERY_STRING", query);
     cmd.env("REMOTE_USER", "");
     cmd.env("REMOTE_ADDR", remote);
+    if let Some(content_type) = content_type {
+        cmd.env("CONTENT_TYPE", content_type);
+    }
     cmd.env("GIT_HTTP_EXPORT_ALL", "true");
     cmd.stderr(Stdio::inherit());
     cmd.stdout(Stdio::piped());
@@ -67,23 +88,22 @@ async fn handle_git(
 
     let p = cmd.spawn().unwrap();
 
-    let out = BufReader::new(p.stdout.unwrap());
+    let mut git_output = BufReader::new(p.stdout.unwrap());
 
     let mut headers = HashMap::new();
+    loop {
+        let mut line = String::new();
+        git_output.read_line(&mut line).await.unwrap();
 
-    {
-        let mut out_lines = out.lines();
-        while let Some(line) = out_lines.next_line().await.unwrap() {
-            println!("line: {:?}", line);
-            if line.is_empty() {
-                break;
-            }
-            if let Some((key, value)) = line.split_once(": ") {
-                headers.insert(key.to_string(), value.to_string());
-            }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((key, value)) = line.split_once(": ") {
+            headers.insert(key.to_string(), value.to_string());
         }
     }
-
     dbg!(&headers);
 
     let mut resp = Response::builder();
@@ -95,8 +115,24 @@ async fn handle_git(
         }
     }
 
-    dbg!(resp);
+    let (sender, body) = Body::channel();
+    tokio::spawn(send_git(sender, git_output));
 
+    let resp = resp.body(body).unwrap();
+    Ok(resp)
+}
 
-    Ok(format!("Hello!"))
+async fn send_git(mut sender: Sender, mut git_output: BufReader<ChildStdout>) {
+    loop {
+        let mut bytes_out = BytesMut::new();
+        git_output.read_buf(&mut bytes_out).await.unwrap();
+        if bytes_out.is_empty() {
+            println!("empty");
+            return;
+        } else {
+            println!("not empty");
+            dbg!(&bytes_out);
+        }
+        sender.send_data(bytes_out.freeze()).await.unwrap();
+    }
 }

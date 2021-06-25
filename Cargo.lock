@@ -1050,7 +1050,9 @@ dependencies = [
 name = "warp-git"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "http",
+ "hyper",
  "tokio",
  "warp",
 ]
