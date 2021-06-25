@@ -1,43 +1,60 @@
 use std::{collections::HashMap, net::SocketAddr, process::Stdio};
 
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
-use warp::{Filter, Rejection, path::Tail};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+};
+use warp::{path::Tail, Filter, Rejection};
 
 static GIT_PROJECT_ROOT: &str = "/root/test";
 
 #[tokio::main]
 async fn main() {
     // GET /hello/warp => 200 OK with body "Hello, warp!"
-    let hello = 
-        warp::path!("hello" / String)
-            .map(|name| format!("Hello, {}!", name));
+    let hello = warp::path!("hello" / String).map(|name| format!("Hello, {}!", name));
 
-    let git = 
-        warp::path("git")
-            .and(warp::path("crates.io-index"))
-            .and(warp::path::tail())
-            .and(warp::method())
-            .and(warp::header::optional::<String>("Content-Type"))
-            .and(warp::header::optional::<String>("Content-Encoding"))
-            .and(warp::query::raw())
-            .and(warp::addr::remote())
-            .and_then(handle_git);
+    let git = warp::path("git")
+        .and(warp::path("crates.io-index"))
+        .and(warp::path::tail())
+        .and(warp::method())
+        .and(warp::header::optional::<String>("Content-Type"))
+        .and(warp::header::optional::<String>("Content-Encoding"))
+        .and(warp::query::raw())
+        .and(warp::addr::remote())
+        .and_then(handle_git);
 
-    warp::serve(hello.or(git))
-        .run(([0, 0, 0, 0], 3030))
-        .await;
+    warp::serve(hello.or(git)).run(([0, 0, 0, 0], 3030)).await;
 }
 
-async fn handle_git(path_tail: Tail, method: http::Method, content_type: Option<String>, encoding: Option<String>, query: String, remote: Option<SocketAddr>) -> Result<String, Rejection> {
-    dbg!(&path_tail, &method, &content_type, &encoding, &query, &remote);
+async fn handle_git(
+    path_tail: Tail,
+    method: http::Method,
+    content_type: Option<String>,
+    encoding: Option<String>,
+    query: String,
+    remote: Option<SocketAddr>,
+) -> Result<String, Rejection> {
+    dbg!(
+        &path_tail,
+        &method,
+        &content_type,
+        &encoding,
+        &query,
+        &remote
+    );
 
-    let remote = remote.map(|r| r.ip().to_string()).unwrap_or_else(|| "127.0.0.1".to_string());
+    let remote = remote
+        .map(|r| r.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
 
     let mut cmd = Command::new("git");
     cmd.arg("http-backend");
     cmd.env_clear();
     cmd.env("GIT_PROJECT_ROOT", GIT_PROJECT_ROOT);
-    cmd.env("PATH_INFO", format!("/crates.io-index/{}", path_tail.as_str()));
+    cmd.env(
+        "PATH_INFO",
+        format!("/crates.io-index/{}", path_tail.as_str()),
+    );
     cmd.env("REQUEST_METHOD", method.as_str());
     cmd.env("QUERY_STRING", query);
     cmd.env("REMOTE_USER", "");
@@ -65,6 +82,6 @@ async fn handle_git(path_tail: Tail, method: http::Method, content_type: Option<
             }
         }
     }
-    
+
     Ok(format!("Hello!"))
 }
